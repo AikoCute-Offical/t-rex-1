@@ -1,0 +1,215 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  tgz:
+    name: Build release tgz
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: ['ubuntu-20.04', 'macOS-latest']
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Install toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      - name: Cargo build
+        run: cargo build --release --no-default-features
+
+      - name: Tar
+        run: |
+          VERSION=$(basename ${{ github.ref }})
+          target=$(gcc -dumpmachine)
+          cd target/release          
+          strip t_rex
+          tar czf ../../t-rex-$VERSION-$target.tar.gz t_rex
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v2
+        with:
+          name: ${{ github.run_id }}
+          path: t-rex-*.tar.gz
+          retention-days: 1
+
+  deb:
+    runs-on: ubuntu-20.04
+    container: ${{ matrix.container }}
+    strategy:
+      matrix:
+       include:
+         - variant: focal
+           container: null
+           sudo: sudo
+         - variant: bullseye
+           container: rust:bullseye
+           sudo: null
+         - variant: buster
+           container: rust:buster
+           sudo: null
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb
+
+      - name: Install build-dependencies
+        run: |
+          ${{ matrix.sudo }} apt update
+          ${{ matrix.sudo }} apt install -y libgdal-dev
+      
+      - name: Build & package
+        run: |
+          cargo deb --variant=${{ matrix.variant }}
+          dpkg -I target/debian/t-rex*.deb
+          dpkg -c target/debian/t-rex*.deb
+
+      - name: Install package
+        run: ${{ matrix.sudo }} dpkg -i target/debian/*.deb
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v2
+        with:
+          name: ${{ github.run_id }}
+          path: target/debian/*.deb
+          retention-days: 1
+
+  rpm:
+    runs-on: ubuntu-latest
+    container: ${{ matrix.container }}
+    strategy:
+      matrix:
+        container: ['centos:8']
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Install toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      - name: Install cargo-rpm
+        run: |
+          yum install gcc rpm-build -y
+          cargo install cargo-rpm
+
+      - name: Install build-dependencies
+        run: |
+          yum install openssl-devel -y
+          # yum install epel-release -y
+          # yum install --enablerepo=powertools gdal-devel -y
+          # RH UBI image registry.access.redhat.com/ubi8/ubi
+          # rpm -ivh https://dl.fedoraproject.org/pub/epel/epel-release-latest-8.noarch.rpm
+          # yum install --enablerepo=ubi-8-codeready-builder gdal-devel
+
+      - name: Build & package
+        run: |
+          ln -s packaging/rpm .rpm
+          cargo rpm build --output target/rpm/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v2
+        with:
+          name: ${{ github.run_id }}
+          path: target/rpm/*.rpm
+          retention-days: 1
+
+  msi:
+    name: Build MSI
+    runs-on: windows-2019
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Install GDAL
+        shell: bash
+        run: |
+          curl -S -O https://download.gisinternals.com/sdk/downloads/release-1928-x64-dev.zip
+          7z x release-1928-x64-dev.zip
+          find release-1928-x64 -ls >release-1928-x64.txt
+          rm -rf release-1928-x64/bin/ms release-1928-x64/bin/proj release-1928-x64/bin/gdal/{csharp,java,python}
+          mv release-1928-x64/bin/gdal/apps/* release-1928-x64/bin/
+  
+      - name: Build
+        shell: bash
+        run: |
+          rustc -Vv
+          cargo -V
+          vswhere
+          export GDAL_HOME=$PWD/release-1928-x64
+          export GDAL_DATA=$GDAL_HOME/bin/gdal-data
+          export PATH=$GDAL_HOME/bin:$PATH
+          ogrinfo --version
+          ogrinfo --formats
+          export GDAL_VERSION=$(ogrinfo --version | sed 's/GDAL \(.*\), .*/\1/')
+          echo $PATH
+          cargo build --release
+          target/release/t_rex --version
+
+      - name: Create msi
+        shell: bash
+        run: |
+          export VERSION=$(basename ${{ github.ref }})
+          export RELEASE_DIR=$PWD/target/release
+          export GDAL_HOME=$PWD/release-1928-x64
+          cd packaging/windows
+          "$WIX/bin/heat" dir $GDAL_HOME/bin -var wix.GdalSrcDir -dr BINDIR -nologo -srd -ag -sw5150 -cg gdal -o gdal.wxs
+          "$WIX/bin/candle" -nologo gdal.wxs
+          "$WIX/bin/candle" -nologo t-rex.wxs
+          "$WIX/bin/light" -nologo -dBuildDir=$RELEASE_DIR -dGdalSrcDir=$GDAL_HOME/bin -sice:ICE80 -o t-rex-$VERSION.msi t-rex.wixobj gdal.wixobj
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v2
+        with:
+          name: ${{ github.run_id }}
+          path: packaging/windows/t-rex-*.msi
+          retention-days: 1
+
+  release:
+    needs: [tgz, deb, rpm, msi]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Retrieve saved artefacts
+        uses: actions/download-artifact@v2
+        with:
+          name: ${{ github.run_id }}
+          path: packages
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        with:
+          body: |
+            See [CHANGELOG](https://github.com/t-rex-tileserver/t-rex/blob/master/CHANGELOG.md)
+          files: packages/*
+          draft: false
+          prerelease: true
+
+  # docker-release:
+  #   name: Docker release
+  #   needs: [deb]
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v2
+  #     - name: Build and publish
+  #       uses: elgohr/Publish-Docker-Github-Action@master
+  #       env:
+  #         # Cannot download asset from draft release?
+  #         DEB_URL: ${{ needs.deb.outputs.asset_download_url }}/t-rex-focal_0.14.1.pre5-1.focal_amd64.deb
+  #       with:
+  #         name: sourcepole/t-rex
+  #         username: ${{ secrets.DOCKER_USERNAME }}
+  #         password: ${{ secrets.DOCKER_PASSWORD }}
+  #         workdir: packaging/docker
+  #         buildargs: DEB_URL
+  #         tag_names: true

@@ -1,0 +1,45 @@
+# t-rex configuration
+
+[service.mvt]
+viewer = true
+
+[[datasource]]
+dbconn = "postgresql://t_rex:t_rex@127.0.0.1:5439/t_rex_tests"
+
+[grid.user]
+width = 256
+height = 256
+# LV95/CH1903+ (EPSG:2056)
+extent = { minx = 2420000.0, miny = 1030000.0, maxx = 2900000.0, maxy = 1350000.0 }
+srid = 2056
+units = "m"
+resolutions = [4000.0,3750.0,3500.0,3250.0,3000.0,2750.0,2500.0,2250.0,2000.0,1750.0,1500.0,1250.0,1000.0,750.0,650.0,500.0,250.0,100.0,50.0,20.0,10.0,5.0,2.5,2.0,1.5,1.0,0.5]
+origin = "TopLeft"
+
+[[tileset]]
+name = "g1k18"
+extent = [5.96438, 45.81937, 10.55886, 47.77210]
+
+[[tileset.layer]]
+name = "g1k18"
+geometry_field = "wkb_geometry"
+geometry_type = "MULTIPOLYGON"
+fid_field = "ktnr"
+srid = 2056
+buffer_size = 2
+simplify = true
+[[tileset.layer.query]]
+sql = """SELECT wkb_geometry,ktnr::FLOAT8,ktname FROM geostat.g1k18 WHERE wkb_geometry && !bbox!"""
+
+#[cache.file]
+#base = "/tmp/mvtcache"
+
+[webserver]
+# Bind address. Use 0.0.0.0 to listen on all adresses.
+bind = "127.0.0.1"
+port = 6767
+#cache_control_max_age = 43200
+
+[[webserver.static]]
+path = "/static"
+dir = "./examples/"
